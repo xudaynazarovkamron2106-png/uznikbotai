@@ -1,35 +1,30 @@
 import os
+import json
 import asyncio
-from http.server import BaseHTTPRequestHandler, HTTPServer
-import threading
+from fastapi import FastAPI, Request
 from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram.ext import Application, CommandHandler, MessageHandler, filters
 from google import genai
 from google.genai import types
 
-# Vercel va atrof-muhit o'zgaruvchilari (Karta so'ramasligi va xavfsizlik uchun)
-TOKEN = os.environ.get("TELEGRAM_TOKEN", "8911290591:AAFYH6WS5JjQkfGSVUpHBje2iMHFxzpBo0A")
-GEMINI_KEY = os.environ.get("GEMINI_TOKEN", "AQ.Ab8RN6JSUZaF05aLk0mQ2y72isaqbtha_TmAO6ZrO9WRYViLRQ")
+# Tokenlarni Vercel'dan olamiz
+TOKEN = os.environ.get("TELEGRAM_TOKEN")
+GEMINI_KEY = os.environ.get("GEMINI_TOKEN")
 
-class HealthCheckServer(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.send_header("Content-type", "text/plain")
-        self.end_headers()
-        self.wfile.write(b"Uznik AI is running perfectly!")
+# Telegram Application-ni sozlash
+# Vercel-da pooling ishlamagani uchun faqat webhook yoki oddiy boshqaruv ishlatamiz
+application = Application.builder().token(TOKEN).build()
 
-def run_health_server():
-    port = int(os.environ.get("PORT", 8000))
-    server = HTTPServer(("0.0.0.0", port), HealthCheckServer)
-    server.serve_forever()
+# FastAPI ilovasini yaratamiz (Vercel buni avtomatik taniydi)
+app = FastAPI()
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def start(update: Update, context):
     await update.message.reply_text(
         "Salom! Men Uznik AI man. Meni Kamronbek Xudaynazarov va Uznik Group yaratgan. "
         "Menga Roblox yoki boshqa xohlagan mavzuingizda savol berishingiz mumkin!"
     )
 
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_message(update: Update, context):
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
     try:
         user_text = update.message.text
@@ -51,17 +46,22 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text("Kechirasiz, tizim so'rovingizni qayta ishlay olmadi.")
 
-# Vercel uchun kirish funksiyasi
-def handler(request, start_response):
-    start_response('200 OK', [('Content-Type', 'text/plain')])
-    return [b"Bot status: Active"]
+# Handlerlarni ro'yxatdan o'tkazish
+application.add_handler(CommandHandler("start", start))
+application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-def main():
-    threading.Thread(target=run_health_server, daemon=True).start()
-    application = Application.builder().token(TOKEN).build()
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    application.run_polling()
+@app.on_event("startup")
+async def startup_event():
+    await application.initialize()
 
-if __name__ == '__main__':
-    main()
+@app.post("/api/webhook")
+async def webhook(request: Request):
+    """Telegramdan kelgan xabarlarni qabul qilish"""
+    data = await request.json()
+    update = Update.de_json(data, application.bot)
+    await application.process_update(update)
+    return {"status": "ok"}
+
+@app.get("/")
+def read_root():
+    return {"Uznik AI": "Active"}
