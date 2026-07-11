@@ -1,22 +1,18 @@
 import os
 import json
 import asyncio
-from fastapi import FastAPI, Request
+from http.server import BaseHTTPRequestHandler
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters
 from google import genai
 from google.genai import types
 
-# Tokenlarni Vercel'dan olamiz
+# Tokenlar
 TOKEN = os.environ.get("TELEGRAM_TOKEN")
 GEMINI_KEY = os.environ.get("GEMINI_TOKEN")
 
-# Telegram Application-ni sozlash
-# Vercel-da pooling ishlamagani uchun faqat webhook yoki oddiy boshqaruv ishlatamiz
+# Telegram ilovasi
 application = Application.builder().token(TOKEN).build()
-
-# FastAPI ilovasini yaratamiz (Vercel buni avtomatik taniydi)
-app = FastAPI()
 
 async def start(update: Update, context):
     await update.message.reply_text(
@@ -25,7 +21,6 @@ async def start(update: Update, context):
     )
 
 async def handle_message(update: Update, context):
-    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
     try:
         user_text = update.message.text
         client = genai.Client(api_key=GEMINI_KEY)
@@ -44,24 +39,41 @@ async def handle_message(update: Update, context):
         )
         await update.message.reply_text(response.text)
     except Exception as e:
+        print(f"Xatolik: {e}")
         await update.message.reply_text("Kechirasiz, tizim so'rovingizni qayta ishlay olmadi.")
 
-# Handlerlarni ro'yxatdan o'tkazish
+# Handlerlarni sozlash
 application.add_handler(CommandHandler("start", start))
 application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-@app.on_event("startup")
-async def startup_event():
-    await application.initialize()
+# Vercel uchun standart kirish klassi
+class handler(BaseHTTPRequestHandler):
+    def do_POST(self):
+        self.send_response(200)
+        self.send_header('Content-type', 'application/json')
+        self.end_headers()
+        
+        # Kelgan ma'lumotni o'qish
+        content_length = int(self.headers['Content-Length'])
+        post_data = self.rfile.read(content_length)
+        data = json.loads(post_data.decode('utf-8'))
+        
+        # Telegram so'rovini asinxron qayta ishlash
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        
+        update = Update.de_json(data, application.bot)
+        
+        loop.run_until_complete(application.initialize())
+        loop.run_until_complete(application.process_update(update))
+        loop.close()
+        
+        self.wfile.write(json.dumps({"status": "ok"}).encode('utf-8'))
+        return
 
-@app.post("/api/webhook")
-async def webhook(request: Request):
-    """Telegramdan kelgan xabarlarni qabul qilish"""
-    data = await request.json()
-    update = Update.de_json(data, application.bot)
-    await application.process_update(update)
-    return {"status": "ok"}
-
-@app.get("/")
-def read_root():
-    return {"Uznik AI": "Active"}
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header('Content-type', 'text/plain')
+        self.end_headers()
+        self.wfile.write(b"Uznik AI active and ready.")
+        return
